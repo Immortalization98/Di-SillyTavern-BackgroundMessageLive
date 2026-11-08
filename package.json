@@ -1,0 +1,20 @@
+{
+  "name": "di-sillytavern-backgroundmessagelive",
+  "version": "1.0.0",
+  "description": "SillyTavern server plugin + UI extension: replies keep generating when the browser disconnects, can be recovered later, and content-free push notifications are sent when they finish.",
+  "type": "module",
+  "main": "server/index.mjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "author": "Immortalization98",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Immortalization98/Di-SillyTavern-BackgroundMessageLive.git"
+  },
+  "keywords": ["sillytavern", "sillytavern-plugin", "sillytavern-extension", "web-push", "background-generation"]
+}

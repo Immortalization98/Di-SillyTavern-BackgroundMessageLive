@@ -1,0 +1,12 @@
+{
+    "display_name": "Background Message Live",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "extension/index.js",
+    "css": "extension/style.css",
+    "author": "Immortalization98",
+    "version": "1.0.0",
+    "homePage": "https://github.com/Immortalization98/Di-SillyTavern-BackgroundMessageLive",
+    "auto_update": true
+}
