@@ -1,4 +1,4 @@
-// Local-only stand-in for the planned Caddy rule:
+// Local-only helper proxy (dev tool). In rewrite mode it mimics the optional reverse-proxy rule:
 //   POST /api/backends/chat-completions/generate  ->  /api/plugins/di-bgmessage-live/generate
 // Everything else is proxied unchanged. Streams are piped without buffering.
 import http from 'node:http';
