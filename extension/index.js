@@ -6,8 +6,10 @@
 //  4. manages the push-notification subscription of this device.
 import { planInsertion } from './insertion.js';
 import { createTranslator } from './i18n.js';
+import { buildReport, collectEnvironment, configureRedaction, createDiagnosticsLog, hostOf } from './diagnostics.js';
 
 const SETTINGS_KEY = 'di-bgmessage-live';
+const DIAG_STORAGE_KEY = 'di-bgmessage-live:diagnostics';
 const EXTENSION_PATH = new URL('.', import.meta.url).pathname;
 const SW_URL = `${EXTENSION_PATH}sw.js`;
 const SW_SCOPE = EXTENSION_PATH;
@@ -50,6 +52,26 @@ const REASON_KEYS = {
 };
 
 const messageFor = (error) => (ERROR_KEYS[error?.message] ? t(ERROR_KEYS[error.message]) : t('errUnknown', { code: error?.message || '?' }));
+
+// Per-device event log for bug reports ("Copy diagnostics"). It never stores chat content,
+// and the tavern's own address is removed from everything it records.
+configureRedaction([location.origin, location.host, location.hostname]);
+const diag = createDiagnosticsLog({
+  storage: (() => { try { return window.localStorage; } catch { return null; } })(),
+  storageKey: DIAG_STORAGE_KEY,
+});
+
+// Uncaught errors from this extension's own files only. Messages are not kept (they can quote
+// data); the error name and the place are enough to find the bug.
+const ownFile = (url) => typeof url === 'string' && url.includes(EXTENSION_PATH);
+const shortPlace = (file, line, column) => `${String(file).split('/').pop()}:${line || 0}:${column || 0}`;
+window.addEventListener('error', (event) => {
+  if (ownFile(event.filename)) diag.record('script.error', { error: { name: event.error?.name || 'Error' }, detail: { at: shortPlace(event.filename, event.lineno, event.colno) } });
+});
+window.addEventListener('unhandledrejection', (event) => {
+  const stack = typeof event.reason?.stack === 'string' ? event.reason.stack : '';
+  if (ownFile(stack)) diag.record('script.rejection', { error: { name: event.reason?.name || 'Error' } });
+});
 
 const context = () => SillyTavern.getContext();
 
@@ -102,11 +124,18 @@ function onGenerationStarted(type, options, dryRun) {
 
 async function onChatCompletionSettingsReady(data) {
   if (!settings().backgroundEnabled || !mainGenerationType || data?.type !== mainGenerationType) return;
-  if (!DETACHABLE_SOURCES.includes(data?.chat_completion_source)) return;
+  // Skips are logged too: "my reply was not recovered" is usually an unsupported source or a group chat.
+  if (!DETACHABLE_SOURCES.includes(data?.chat_completion_source)) {
+    diag.record('job.skip', { detail: { reason: 'source', source: data?.chat_completion_source } });
+    return;
+  }
   const ctx = context();
   const character = currentCharacter();
   const chatId = ctx.getCurrentChatId();
-  if (!character || !chatId) return;
+  if (!character || !chatId) {
+    diag.record('job.skip', { detail: { reason: ctx.groupId ? 'group-chat' : 'no-chat' } });
+    return;
+  }
   const last = ctx.chat[ctx.chat.length - 1];
   const registration = {
     type: mainGenerationType,
@@ -120,8 +149,10 @@ async function onChatCompletionSettingsReady(data) {
     // Never hold up the generation for long: without registration it simply runs as before.
     const result = await Promise.race([api('POST', '/jobs/register', registration), new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 3000))]);
     currentJobId = result.id;
-  } catch {
+    // Successful registrations are not logged: one per message would push real errors out.
+  } catch (error) {
     currentJobId = null;
+    diag.record('job.register', { error, detail: { type: registration.type, source: data.chat_completion_source } });
   }
 }
 
@@ -131,7 +162,10 @@ function onGenerationStopped() {
   currentJobId = null;
   endedJob = { id: null, at: 0 };
   mainGenerationType = null;
-  if (id) api('POST', `/jobs/${id}/cancel`).catch(() => {});
+  if (id) {
+    diag.record('job.cancel');
+    api('POST', `/jobs/${id}/cancel`).catch(error => diag.record('job.cancel', { error }));
+  }
 }
 
 function onGenerationEnded() {
@@ -187,8 +221,9 @@ async function checkForResults() {
     } else {
       stopPolling();
     }
-  } catch {
+  } catch (error) {
     // The plugin may be missing or the network down; recovery is best-effort.
+    diag.record('results.check', { error });
   } finally {
     checking = false;
   }
@@ -211,9 +246,11 @@ async function offerResult(id) {
   let result;
   try {
     result = (await api('GET', `/jobs/results/${id}`)).result;
-  } catch {
+  } catch (error) {
+    diag.record('results.fetch', { error });
     return;
   }
+  diag.record('results.offer', { detail: { status: result.status, code: result.code, type: result.type } });
   promptOpen = true;
   try {
     const content = document.createElement('div');
@@ -260,7 +297,8 @@ async function offerResult(id) {
   }
 }
 
-async function copyText(text) {
+// `container` must be inside an open modal dialog when there is one: elements outside it are inert.
+async function copyText(text, container = document.body) {
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -268,7 +306,7 @@ async function copyText(text) {
     const area = Object.assign(document.createElement('textarea'), { value: text });
     area.style.position = 'fixed';
     area.style.opacity = '0';
-    document.body.append(area);
+    container.append(area);
     area.select();
     const ok = document.execCommand('copy');
     area.remove();
@@ -314,6 +352,7 @@ async function insertResult(result) {
     return;
   }
   const plan = planInsertion(ctx.chat, result);
+  diag.record('results.insert', { detail: { plan: plan.kind } });
   if (plan.kind === 'mismatch') {
     const copied = await copyText(result.text);
     await ctx.callGenericPopup(t('mismatch', { copied: copied ? t('mismatchCopied') : '' }), ctx.POPUP_TYPE.TEXT, '', { okButton: t('buttonGotIt') });
@@ -404,33 +443,154 @@ function waitUntilActive(registration, timeoutMs = 15000) {
 }
 
 async function enableNotifications() {
-  const env = environment();
-  if (!env.supported) throw new Error(env.isIOS && !env.standalone ? 'IOS_NOT_STANDALONE' : 'UNSUPPORTED');
-  // iOS only shows the permission prompt when called directly from the tap, so ask first.
-  const permission = await Notification.requestPermission();
-  if (permission !== 'granted') throw new Error(permission === 'denied' ? 'PERMISSION_DENIED' : 'PERMISSION_DISMISSED');
-  const registration = await navigator.serviceWorker.register(SW_URL, { scope: SW_SCOPE });
-  await waitUntilActive(registration);
-  const { publicKey } = await api('GET', '/push/public-key');
-  let subscription = await registration.pushManager.getSubscription();
-  if (subscription && !sameKey(subscription.options?.applicationServerKey, publicKey)) {
-    await subscription.unsubscribe();
-    subscription = null;
+  // `step` tells a bug report exactly which browser call failed.
+  let step = 'support-check';
+  try {
+    const env = environment();
+    if (!env.supported) throw new Error(env.isIOS && !env.standalone ? 'IOS_NOT_STANDALONE' : 'UNSUPPORTED');
+    // iOS only shows the permission prompt when called directly from the tap, so ask first.
+    step = 'permission';
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') throw new Error(permission === 'denied' ? 'PERMISSION_DENIED' : 'PERMISSION_DISMISSED');
+    step = 'sw-register';
+    const registration = await navigator.serviceWorker.register(SW_URL, { scope: SW_SCOPE });
+    step = 'sw-activate';
+    await waitUntilActive(registration);
+    step = 'public-key';
+    const { publicKey } = await api('GET', '/push/public-key');
+    step = 'get-subscription';
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription && !sameKey(subscription.options?.applicationServerKey, publicKey)) {
+      step = 'unsubscribe-old';
+      await subscription.unsubscribe();
+      subscription = null;
+    }
+    if (!subscription) {
+      step = 'subscribe';
+      subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) });
+    }
+    step = 'server-subscribe';
+    await api('POST', '/push/subscribe', { subscription: subscription.toJSON(), language: i18n.language });
+    diag.record('push.enable', { detail: { result: 'ok', service: hostOf(subscription.endpoint) } });
+  } catch (error) {
+    diag.record('push.enable', { step, error });
+    throw error;
   }
-  if (!subscription) {
-    subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) });
-  }
-  await api('POST', '/push/subscribe', { subscription: subscription.toJSON(), language: i18n.language });
 }
 
 async function disableNotifications() {
-  const registration = await ownRegistration();
-  const subscription = await registration?.pushManager.getSubscription();
-  if (subscription) {
-    await api('POST', '/push/unsubscribe', { endpoint: subscription.endpoint }).catch(() => {});
-    await subscription.unsubscribe();
+  try {
+    const registration = await ownRegistration();
+    const subscription = await registration?.pushManager.getSubscription();
+    if (subscription) {
+      await api('POST', '/push/unsubscribe', { endpoint: subscription.endpoint }).catch(error => diag.record('push.disable', { step: 'server-unsubscribe', error }));
+      await subscription.unsubscribe();
+    }
+    await registration?.unregister();
+    diag.record('push.disable', { detail: { result: 'ok' } });
+  } catch (error) {
+    diag.record('push.disable', { error });
+    throw error;
   }
-  await registration?.unregister();
+}
+
+// ---------------------------------------------------------------------------------------
+// Diagnostics report
+// ---------------------------------------------------------------------------------------
+
+async function extensionVersion() {
+  try {
+    const response = await fetch(new URL('../manifest.json', import.meta.url), { cache: 'no-store' });
+    return (await response.json()).version || '?';
+  } catch {
+    return '?';
+  }
+}
+
+async function tavernVersion() {
+  try {
+    const response = await fetch('/version', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+    return (await response.json()).pkgVersion || '?';
+  } catch {
+    return '?';
+  }
+}
+
+async function collectReport() {
+  const [extension, tavern] = await Promise.all([extensionVersion(), tavernVersion()]);
+  const server = {};
+  try {
+    server.mode = (await api('GET', '/status')).mode;
+  } catch (error) {
+    server.error = error?.message || 'ERROR';
+  }
+  try {
+    server.devices = (await api('GET', '/push/status')).count;
+  } catch { /* already reported through the mode line */ }
+  const device = {};
+  try {
+    const registration = await ownRegistration();
+    const subscription = await registration?.pushManager.getSubscription();
+    device.subscription = Boolean(subscription);
+    if (subscription) device.pushHost = hostOf(subscription.endpoint);
+  } catch (error) {
+    device.subscription = false;
+    diag.record('report.device', { error });
+  }
+  return buildReport({
+    header: t('diagReportHeader'),
+    versions: { extension, tavern },
+    server,
+    environment: collectEnvironment(window),
+    device,
+    entries: diag.entries(),
+  });
+}
+
+let diagnosticsOpen = false;
+
+async function showDiagnostics() {
+  if (diagnosticsOpen) return;
+  diagnosticsOpen = true;
+  try {
+    await openDiagnostics();
+  } finally {
+    diagnosticsOpen = false;
+  }
+}
+
+async function openDiagnostics() {
+  const ctx = context();
+  const content = document.createElement('div');
+  content.className = 'bgml-diagnostics';
+  content.append(Object.assign(document.createElement('h3'), { textContent: t('diagTitle') }));
+  content.append(paragraph(t('diagIntro')));
+  const area = Object.assign(document.createElement('textarea'), { value: t('checking'), readOnly: true, rows: 12, className: 'text_pole' });
+  area.addEventListener('focus', () => area.select());
+  content.append(area);
+  const row = document.createElement('div');
+  row.className = 'bgml-actions';
+  const copy = Object.assign(document.createElement('button'), { type: 'button', className: 'menu_button', textContent: t('diagCopy'), disabled: true });
+  const clear = Object.assign(document.createElement('button'), { type: 'button', className: 'menu_button', textContent: t('diagClear') });
+  const note = paragraph('', 'bgml-note');
+  // Copy straight from the click handler: iOS only allows clipboard writes inside the tap.
+  copy.addEventListener('click', async () => {
+    const ok = await copyText(area.value, content);
+    note.textContent = ok ? t('diagCopied') : t('diagCopyFailed');
+    if (!ok) { area.focus(); area.select(); }
+  });
+  clear.addEventListener('click', () => {
+    diag.clear();
+    note.textContent = t('diagCleared');
+  });
+  row.append(copy, clear);
+  content.append(row, note);
+  // Open first, fill in when the (possibly slow) status requests are done.
+  const closed = ctx.callGenericPopup(content, ctx.POPUP_TYPE.TEXT, '', { okButton: t('buttonClose'), wide: true });
+  collectReport()
+    .then((report) => { area.value = report; copy.disabled = false; })
+    .catch((error) => { area.value = messageFor(error); });
+  await closed;
 }
 
 function render(root, { background, device, server, note, busy }) {
@@ -498,6 +658,9 @@ function buildPanel() {
           <button type="button" class="menu_button" data-bgml-action="disable" data-bgml-text="disable"></button>
         </div>
         <p class="bgml-note" data-bgml-note role="status" aria-live="polite"></p>
+        <div class="bgml-actions bgml-diag-row">
+          <button type="button" class="menu_button" data-bgml-diagnostics data-bgml-text="diagButton"></button>
+        </div>
       </div>
     </div>`;
   root.querySelectorAll('[data-bgml-text]').forEach(node => { node.textContent = t(node.dataset.bgmlText); });
@@ -513,7 +676,16 @@ function buildPanel() {
   const actions = {
     enable: async () => { await enableNotifications(); return t('enabled'); },
     test: async () => {
-      const result = await api('POST', '/push/test');
+      let result;
+      try {
+        result = await api('POST', '/push/test');
+      } catch (error) {
+        diag.record('push.test', { error });
+        throw error;
+      }
+      // Per-device outcome without endpoints: e.g. "iOS/apple:201 Android/fcm:403".
+      const outcome = result.results.map(item => `${item.device || '?'}/${item.service || '?'}:${item.status ?? item.error ?? (item.ok ? 'ok' : 'fail')}`).join(' ');
+      diag.record('push.test', { detail: { devices: outcome || 'none', removed: result.removed || 0 } });
       const ok = result.results.filter(item => item.ok).length;
       const extra = result.removed ? t('testRemoved', { count: result.removed }) : '';
       return ok ? t('testSent', { ok, total: result.results.length, extra }) : t('testNone', { extra });
@@ -522,6 +694,10 @@ function buildPanel() {
   };
 
   root.addEventListener('click', async (event) => {
+    if (event.target.closest('[data-bgml-diagnostics]')) {
+      showDiagnostics().catch(error => toastr.warning(messageFor(error), t('toastTitle')));
+      return;
+    }
     const button = event.target.closest('[data-bgml-action]');
     if (!button) return;
     const action = actions[button.dataset.bgmlAction];

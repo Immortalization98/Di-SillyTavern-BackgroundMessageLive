@@ -1,6 +1,6 @@
 {
   "name": "di-sillytavern-backgroundmessagelive",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "SillyTavern server plugin + UI extension: replies keep generating when the browser disconnects, can be recovered later, and content-free push notifications are sent when they finish.",
   "type": "module",
   "main": "server/index.mjs",

@@ -6,7 +6,7 @@
     "js": "extension/index.js",
     "css": "extension/style.css",
     "author": "Immortalization98",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "homePage": "https://github.com/Immortalization98/Di-SillyTavern-BackgroundMessageLive",
     "auto_update": true
 }

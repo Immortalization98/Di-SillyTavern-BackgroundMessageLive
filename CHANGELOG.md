@@ -1,5 +1,12 @@
 # Changelog / 更新日志
 
+## 1.1.0 — 2026-11-10
+
+- "Copy diagnostics" in the panel: a per-device log of this extension's recent events (which browser call failed, error names, job registration and recovery outcomes, test-push results per device) plus versions and browser capabilities, ready to paste into a bug report. No chat content, names, chat ids or addresses; push endpoints are reduced to their host.
+  面板新增“复制诊断信息”：记录本扩展在这台设备上最近的事件（哪一步浏览器调用失败、错误名称、生成登记和找回结果、各设备的测试推送结果），附上版本号和浏览器能力，可以直接贴进问题反馈。不含聊天内容、名字、聊天编号或地址，推送地址只保留域名。
+- Unknown errors now point to "Copy diagnostics". README: Android notification requirements.
+  未知错误会提示使用“复制诊断信息”；说明文档补充了安卓通知的前提条件。
+
 ## 1.0.0 — 2026-11-09
 
 First public release. / 首个公开版本。

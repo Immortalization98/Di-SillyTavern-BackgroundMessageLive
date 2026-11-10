@@ -144,6 +144,7 @@ extension: on return, asks before putting the saved reply into the chat
   - `data/_di-bgmessage-live/config.json`: your settings;
   - `data/<user>/_di-bgmessage-live/push.json`: that user's push subscriptions (up to 5 devices);
   - `data/<user>/_di-bgmessage-live/results/`: replies finished in the background, deleted when put back, dismissed, or after the retention period.
+- **Diagnostics log** (browser only): the extension keeps the last 50 events of this extension (versions, which browser call failed, error names) in the browser's `localStorage`, so you can attach them to a bug report with "Copy diagnostics". It never contains chat text, character names, chat ids, account names or the server address; push endpoints are reduced to their host name. "Clear log" in the diagnostics window deletes it.
 - **Users are isolated.** Every API needs a logged-in SillyTavern user, passes SillyTavern's CSRF check, and only sees that user's jobs, results and devices.
 - **Notifications carry no content**: only a fixed sentence and your configured title.
 - **Push endpoints are restricted** to the Apple, Google, Mozilla and Microsoft push services, so the server cannot be tricked into sending requests elsewhere.
@@ -160,6 +161,9 @@ extension: on return, asks before putting the saved reply into the chat
 | "must be opened from the Home Screen icon" | On iPhone/iPad push only works in a Home Screen web app. |
 | Notifications turned on but nothing arrives | Check the system notification settings for the Home Screen app / browser, and that SillyTavern is served over HTTPS. The panel shows how many devices the server knows. |
 | Replies are not recovered | Background generation applies only to OpenAI-compatible Chat Completion sources in single-character chats, with the panel toggle "Keep generating when I leave the page" on. |
+| Android: turning on notifications fails (for example `Error retrieving push subscription`) | On Android, Chrome and Firefox deliver web push through Google's push service, so the phone needs Google Play services and access to Google. Browsers built on Android System WebView do not support web push at all. Background generation still works without notifications. |
+
+**Reporting a problem:** open the panel, tap **Copy diagnostics**, check the text and paste it into your issue or Discord message. It lists versions, your browser and what it supports, and recent errors of this extension on this device — no chat content.
 
 ## Reverse-proxy mode (fallback)
 
