@@ -8,7 +8,8 @@
 Send a message, lock your phone, and the reply still gets written.
 
 - **Keeps generating in the background.** If the browser disconnects (phone locked, app switched, tab closed), the server finishes the reply instead of throwing it away.
-- **Recovers the reply.** When you come back to that chat you are asked before anything is put into it: *Put into chat / Copy / Delete / Later*. A half-finished reply is replaced; a different real reply is never overwritten (the result becomes a new swipe instead).
+- **Recovers the reply.** When you come back to that chat you are asked before anything is put into it: *Put into chat / Copy / Delete / Later*. A half-finished reply is replaced; a different real reply is never overwritten (the result becomes a new swipe instead). Optionally, a finished reply goes straight into the chat without asking when nothing there has changed.
+- **Survives slow providers behind Cloudflare.** If the provider takes more than a minute to start answering, the server keeps the connection busy, so proxies such as Cloudflare (which cut a request after about 100 seconds of silence) do not end it.
 - **Content-free push notifications.** When a reply finishes while you are away, you get a notification such as "A reply is ready". It never contains any chat text or character name, so nothing private shows on a lock screen.
 - **No reverse proxy needed, no `fetch` patching.** The server plugin takes over SillyTavern's generate route inside the server process. The browser-side extension only listens to SillyTavern events, so it does not interfere with other extensions that observe or intercept requests.
 
@@ -113,6 +114,7 @@ On first start the plugin creates `data/_di-bgmessage-live/config.json` (inside 
 | `jobTimeoutMinutes` | `20` | A background reply is cancelled after this many minutes (1–120). |
 | `resultRetentionDays` | `7` | Finished replies that were never put back are deleted after this many days (1–90). |
 | `inProcessTakeover` | `true` | Take over the generate route inside SillyTavern. Set to `false` only if you prefer [reverse-proxy mode](#reverse-proxy-mode-fallback). |
+| `keepAliveSeconds` | `60` | If SillyTavern has not started answering a background reply after this many seconds, the server sends the response headers itself and then keep-alive data every 20 seconds, so proxies such as Cloudflare (about 100 s) do not cut the request. `0` turns it off; at most 90. |
 
 ## How it works
 
@@ -134,7 +136,8 @@ SillyTavern: POST /api/backends/chat-completions/generate   (unchanged request)
 extension: on return, asks before putting the saved reply into the chat
 ```
 
-- The plugin never reads API keys and never writes chat files. SillyTavern's own endpoint does the generation, and the browser saves the reply through SillyTavern's normal save path after you confirm.
+- The plugin never reads API keys and never writes chat files. SillyTavern's own endpoint does the generation, and the browser saves the reply through SillyTavern's normal save path after you confirm (or right away, if "put finished replies into the chat without asking" is on and the chat has not changed).
+- Slow providers: after `keepAliveSeconds` without an answer, the relay sends status 200 itself and pads the response (SSE comment lines between events, or spaces before a JSON body) until the reply starts. If the provider then fails, the error is sent in a form SillyTavern's page shows as an error, because the status can no longer change. Fast replies are never padded.
 - The route takeover is checked at start-up. If SillyTavern's code looks different (for example after an upgrade), nothing is changed and the plugin reports `proxy-only`.
 
 ## Privacy and security

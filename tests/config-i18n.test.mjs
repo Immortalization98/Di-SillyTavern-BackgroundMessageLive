@@ -23,6 +23,7 @@ test('first start writes a readable default config and warns about the empty con
   assert.equal(config.jobTimeoutMs, 20 * 60_000);
   assert.equal(config.resultRetentionMs, 7 * 24 * 3600_000);
   assert.equal(config.inProcessTakeover, true);
+  assert.equal(config.keepAliveAfterMs, 60_000);
   assert.ok(warnings.some(line => /vapidSubject is empty/.test(line)));
 });
 
@@ -30,18 +31,19 @@ test('custom values are used; invalid ones fall back to safe defaults', (t) => {
   const root = tempRoot(t);
   const file = path.join(root, '_di-bgmessage-live', 'config.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ vapidSubject: 'mailto:owner@example.com', notificationTitle: 'My Tavern', jobTimeoutMinutes: 5, resultRetentionDays: 30, inProcessTakeover: false }));
+  fs.writeFileSync(file, JSON.stringify({ vapidSubject: 'mailto:owner@example.com', notificationTitle: 'My Tavern', jobTimeoutMinutes: 5, resultRetentionDays: 30, inProcessTakeover: false, keepAliveSeconds: 0 }));
   let { config, warnings } = loadConfig(root);
-  assert.deepEqual(config, { vapidSubject: 'mailto:owner@example.com', notificationTitle: 'My Tavern', jobTimeoutMs: 300_000, resultRetentionMs: 30 * 24 * 3600_000, inProcessTakeover: false });
+  assert.deepEqual(config, { vapidSubject: 'mailto:owner@example.com', notificationTitle: 'My Tavern', jobTimeoutMs: 300_000, resultRetentionMs: 30 * 24 * 3600_000, inProcessTakeover: false, keepAliveAfterMs: 0 });
   assert.equal(warnings.length, 0);
 
-  fs.writeFileSync(file, JSON.stringify({ vapidSubject: 'http://insecure.example', notificationTitle: '', jobTimeoutMinutes: 0, resultRetentionDays: 1000, inProcessTakeover: 'yes' }));
+  fs.writeFileSync(file, JSON.stringify({ vapidSubject: 'http://insecure.example', notificationTitle: '', jobTimeoutMinutes: 0, resultRetentionDays: 1000, inProcessTakeover: 'yes', keepAliveSeconds: 300 }));
   ({ config, warnings } = loadConfig(root));
   assert.equal(config.vapidSubject, PROJECT_URL);
   assert.equal(config.notificationTitle, 'SillyTavern');
   assert.equal(config.jobTimeoutMs, 20 * 60_000);
   assert.equal(config.resultRetentionMs, 7 * 24 * 3600_000);
   assert.equal(config.inProcessTakeover, true);
+  assert.equal(config.keepAliveAfterMs, 60_000, 'over 90 s would be too late for Cloudflare');
   assert.ok(warnings.some(line => /must start with/.test(line)));
 });
 

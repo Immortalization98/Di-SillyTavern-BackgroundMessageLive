@@ -4,7 +4,8 @@ export const STRINGS = Object.freeze({
   en: {
     title: 'Background Message Live',
     toggle: 'Keep generating when I leave the page',
-    introBackground: 'If you send a message and then switch apps or lock your phone, the server finishes the reply. When you come back you will be asked before it is put into the chat. Works for single-character chats with OpenAI-compatible Chat Completion sources.',
+    toggleAuto: 'Put finished replies into the chat without asking (only when the chat has not changed)',
+    introBackground: 'If you send a message and then switch apps or lock your phone, the server finishes the reply. When you come back you will be asked before it is put into the chat, unless the second option is on. Works for single-character chats with OpenAI-compatible Chat Completion sources.',
     introPush: 'With notifications on, you get a "reply is ready" notification when it finishes. Notifications never show any chat content.',
     hintIOS: 'iPhone/iPad: open SillyTavern in Safari, tap Share → "Add to Home Screen", always open it from that icon, then turn on notifications.',
     checking: 'Checking…',
@@ -79,11 +80,13 @@ export const STRINGS = Object.freeze({
     mismatchCopied: 'The reply was copied to the clipboard. ',
     insertedSwipe: 'Added as a new swipe; nothing was overwritten.',
     inserted: 'Put into the chat.',
+    insertedAuto: 'A reply finished in the background was put into the chat.',
   },
   zh: {
     title: '后台生成与通知',
     toggle: '手机切走后继续生成回复',
-    introBackground: '发出消息后切到别的 App 或锁屏，服务器会把回复继续生成完；回到酒馆时会提示你，确认后才放回聊天。适用于 Chat Completion 中 OpenAI 兼容来源的单角色聊天。',
+    toggleAuto: '生成好的回复直接放回聊天，不再询问（仅限聊天没有变化时）',
+    introBackground: '发出消息后切到别的 App 或锁屏，服务器会把回复继续生成完；回到酒馆时会提示你，确认后才放回聊天（打开第二个选项则直接放回）。适用于 Chat Completion 中 OpenAI 兼容来源的单角色聊天。',
     introPush: '开启通知后，回复生成完成时会收到一条“回复已生成”的通知，不会显示任何聊天内容。',
     hintIOS: 'iPhone/iPad：请用 Safari 打开酒馆，点分享 →“添加到主屏幕”，以后都从这个图标打开，再开启通知。',
     checking: '正在检查…',
@@ -158,6 +161,7 @@ export const STRINGS = Object.freeze({
     mismatchCopied: '回复内容已复制到剪贴板，',
     insertedSwipe: '已作为新的一页（swipe）放回，原内容没有被覆盖。',
     inserted: '已放回聊天。',
+    insertedAuto: '后台生成好的回复已放回聊天。',
   },
 });
 

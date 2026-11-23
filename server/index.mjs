@@ -116,6 +116,7 @@ export async function init(router, {
     registry,
     loopback,
     timeoutMs: timeoutMs ?? config.jobTimeoutMs,
+    keepAliveAfterMs: config.keepAliveAfterMs,
     now,
     loopbackHeaders: { [BYPASS_HEADER]: bypassToken },
     async onFinished(job, outcome) {

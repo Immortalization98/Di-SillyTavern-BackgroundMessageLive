@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createStreamCollector, parseJsonResponse } from '../server/sse.mjs';
 import { createRegistry, createResultStore, isJobId, newJobId, REGISTRATION_TTL_MS, RESULT_TTL_MS, validateRegistration } from '../server/jobs.mjs';
-import { planInsertion } from '../extension/insertion.js';
+import { canInsertAutomatically, planInsertion } from '../extension/insertion.js';
 
 test('stream collector joins deltas across arbitrary chunk boundaries', () => {
   const sse = [
@@ -113,4 +113,18 @@ test('insertion plan: swipe and continue', () => {
   assert.deepEqual(planInsertion([userMessage('u'), reply('前文。半截')], cont), { kind: 'continue', index: 1 });
   assert.deepEqual(planInsertion([userMessage('u'), reply('前')], cont), { kind: 'mismatch' }, 'message got shorter than the base');
   assert.deepEqual(planInsertion([userMessage('u'), reply('前文。'), userMessage('x')], cont), { kind: 'mismatch' });
+});
+
+test('automatic insertion only fills the reply\'s own spot; anything else still asks', () => {
+  const result = { type: 'normal', messageCount: 2, text: '完整的回复内容' };
+  const auto = (chat, r = result) => canInsertAutomatically(planInsertion(chat, r), chat, r);
+  assert.equal(auto([reply('开场'), userMessage('你好')]), true, 'free spot');
+  assert.equal(auto([reply('开场'), userMessage('你好'), reply('完整的')]), true, 'half-finished reply');
+  assert.equal(auto([reply('开场'), userMessage('你好'), reply('另一条已经重新生成的回复')]), false, 'would add a swipe next to a real reply');
+  assert.equal(auto([reply('开场'), userMessage('你好'), reply('x'), userMessage('又说了一句')]), false, 'chat moved on');
+  const cont = { type: 'continue', messageCount: 2, baseLength: 3, text: '半截之后接着写' };
+  assert.equal(auto([userMessage('u'), reply('前文。')], cont), true, 'continuation not started in the page');
+  assert.equal(auto([userMessage('u'), reply('前文。半截')], cont), true, 'half-finished continuation');
+  assert.equal(auto([userMessage('u'), reply('前文。我自己改写的结尾')], cont), false, 'text the user changed is never replaced silently');
+  assert.equal(canInsertAutomatically(undefined, [], {}), false);
 });

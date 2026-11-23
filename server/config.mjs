@@ -16,6 +16,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   resultRetentionDays: 7,
   // Take over SillyTavern's generate route in-process (no reverse proxy needed).
   inProcessTakeover: true,
+  // If SillyTavern has not answered a background job after this many seconds, start sending keep-alive
+  // data to the browser so proxies such as Cloudflare (about 100 s) do not cut the request. 0 = off.
+  keepAliveSeconds: 60,
 });
 
 const intIn = (value, min, max, fallback) => (Number.isInteger(value) && value >= min && value <= max ? value : fallback);
@@ -46,6 +49,7 @@ export function loadConfig(dataRoot) {
       jobTimeoutMs: intIn(raw.jobTimeoutMinutes, 1, 120, DEFAULT_CONFIG.jobTimeoutMinutes) * 60_000,
       resultRetentionMs: intIn(raw.resultRetentionDays, 1, 90, DEFAULT_CONFIG.resultRetentionDays) * 24 * 3600_000,
       inProcessTakeover: typeof raw.inProcessTakeover === 'boolean' ? raw.inProcessTakeover : DEFAULT_CONFIG.inProcessTakeover,
+      keepAliveAfterMs: intIn(raw.keepAliveSeconds, 0, 90, DEFAULT_CONFIG.keepAliveSeconds) * 1000,
     }),
   };
 }

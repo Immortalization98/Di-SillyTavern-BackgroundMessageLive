@@ -1,5 +1,12 @@
 # Changelog / 更新日志
 
+## 1.2.0 — 2026-11-23
+
+- Keep-alive for slow providers: if SillyTavern has not started answering a background reply after 60 seconds (`keepAliveSeconds`, 0 = off), the server sends the response headers and keep-alive data every 20 seconds, so Cloudflare and similar proxies no longer cut the request after about 100 seconds (error 524). Errors that arrive after that are still shown in the page.
+  慢渠道保活：后台生成的请求 60 秒（`keepAliveSeconds`，0 为关闭）内酒馆还没开始回复时，服务器先发出响应头，之后每 20 秒发一次保活数据，Cloudflare 这类代理不会再在约 100 秒时断开请求（524 错误）。之后出现的错误仍会在页面上提示。
+- New option "Put finished replies into the chat without asking" (off by default): when the chat has not changed, a reply finished in the background goes straight in; otherwise you are still asked.
+  新选项“生成好的回复直接放回聊天，不再询问”（默认关）：聊天没有变化时，后台生成好的回复直接放回；否则仍然询问。
+
 ## 1.1.0 — 2026-11-10
 
 - "Copy diagnostics" in the panel: a per-device log of this extension's recent events (which browser call failed, error names, job registration and recovery outcomes, test-push results per device) plus versions and browser capabilities, ready to paste into a bug report. No chat content, names, chat ids or addresses; push endpoints are reduced to their host.

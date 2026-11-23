@@ -35,3 +35,15 @@ export function planInsertion(chat, result) {
   }
   return { kind: 'mismatch' };
 }
+
+/**
+ * With automatic insertion on, only plans that fill the reply's own spot go in without asking: a free
+ * spot, a half-finished reply, or a continuation whose added part is still empty or half-finished.
+ * Adding a swipe next to another real reply, text the user changed, or a chat that moved on still asks.
+ */
+export function canInsertAutomatically(plan, chat, result) {
+  if (plan?.kind === 'append' || plan?.kind === 'replaceCurrent') return true;
+  if (plan?.kind !== 'continue') return false;
+  const added = String(chat?.[plan.index]?.mes ?? '').slice(result.baseLength);
+  return isPlaceholderOf(added, result.text);
+}

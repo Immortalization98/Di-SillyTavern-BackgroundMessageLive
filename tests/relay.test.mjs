@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createRegistry } from '../server/jobs.mjs';
-import { createRelay } from '../server/relay.mjs';
+import { committedErrorBody, createRelay } from '../server/relay.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -28,10 +28,12 @@ function fakeResponse() {
 }
 
 /** Fake loopback: returns a controllable upstream stream; aborting destroys it. */
-function fakeLoopback({ status = 200, contentType = 'text/event-stream' } = {}) {
+function fakeLoopback({ status = 200, contentType = 'text/event-stream', delayMs = 0, fail = false } = {}) {
   const state = { calls: 0, aborted: false, upstream: null };
   const loopback = async (request, body, { signal }) => {
     state.calls++;
+    if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
+    if (fail) throw new Error('ECONNREFUSED');
     const upstream = new PassThrough();
     upstream.statusCode = status;
     upstream.headers = { 'content-type': contentType };
@@ -45,11 +47,11 @@ function fakeLoopback({ status = 200, contentType = 'text/event-stream' } = {}) 
   return { loopback, state, send, finish };
 }
 
-function setup({ timeoutMs, ...loopbackOptions } = {}) {
+function setup({ timeoutMs, keepAliveAfterMs, keepAliveIntervalMs, ...loopbackOptions } = {}) {
   const registry = createRegistry();
   const finished = [];
   const fake = fakeLoopback(loopbackOptions);
-  const relay = createRelay({ registry, loopback: fake.loopback, onFinished: (job, outcome) => finished.push({ job, outcome }), timeoutMs });
+  const relay = createRelay({ registry, loopback: fake.loopback, onFinished: (job, outcome) => finished.push({ job, outcome }), timeoutMs, keepAliveAfterMs, keepAliveIntervalMs });
   const user = { handle: 'alice', root: '/tmp/alice' };
   const request = (type = 'normal', source = 'custom') => ({ body: { type, chat_completion_source: source, messages: [] }, socket: { localPort: 8000 }, headers: {} });
   const register = (type = 'normal') => registry.register('alice', { type, chatId: 'chat', messageCount: 2 });
@@ -213,4 +215,144 @@ test('in-process mode: unregistered requests go straight to the original handler
   assert.equal(passedThrough, 1, 'registered request is not passed through');
   assert.deepEqual(calls, [{ 'x-bgml-bypass': 'token' }]);
   relay.abortAll();
+});
+
+// --- keep-alive for slow upstreams (Cloudflare drops requests with no response for ~100 s) ---
+
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const streamRequest = (stream = true) => ({ body: { type: 'normal', chat_completion_source: 'custom', stream }, socket: { localPort: 8000 }, headers: {} });
+const KEEPALIVE = { keepAliveAfterMs: 20, keepAliveIntervalMs: 10 };
+
+test('slow stream: headers go out early, comment lines keep the connection busy, the reply follows', async () => {
+  const { relay, finished, fake, user, register } = setup({ ...KEEPALIVE, delayMs: 70 });
+  const registration = register();
+  const response = fakeResponse();
+  await relay.handle(streamRequest(), response, user);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['Content-Type'], 'text/event-stream; charset=utf-8');
+  assert.equal(response.headers['X-Bgml-Job'], registration.id);
+  assert.ok(response.chunks.length >= 2, 'several keep-alive lines while waiting');
+  assert.ok(response.chunks.every(chunk => chunk === ': keepalive\n\n'));
+  fake.send('慢渠道');
+  fake.finish();
+  await tick(); await tick(); await tick();
+  assert.ok(response.text().endsWith('data: [DONE]\n\n'));
+  assert.equal(finished.length, 0, 'delivered');
+});
+
+test('no keep-alive line is put inside an unfinished SSE event', async () => {
+  const { relay, fake, user, register } = setup(KEEPALIVE);
+  register();
+  const response = fakeResponse();
+  await relay.handle(streamRequest(), response, user);
+  fake.state.upstream.write('data: {"choices":[{"delta":{"content":"半');
+  await wait(60);
+  assert.ok(!response.text().includes('keepalive'), 'event still open');
+  fake.state.upstream.write('"}}]}\n\n');
+  await wait(60);
+  assert.ok(response.text().endsWith(': keepalive\n\n'), 'padding resumes after the event ends');
+  relay.abortAll();
+});
+
+test('a fast reply is never padded', async () => {
+  const { relay, fake, user, register } = setup(KEEPALIVE);
+  register();
+  const response = fakeResponse();
+  await relay.handle(streamRequest(), response, user);
+  fake.send('快');
+  fake.finish();
+  await wait(50);
+  assert.ok(!response.text().includes('keepalive'));
+});
+
+test('slow non-streaming reply: whitespace before the JSON body, which still parses', async () => {
+  const { relay, fake, user, register } = setup({ ...KEEPALIVE, delayMs: 50, contentType: 'application/json' });
+  register();
+  const response = fakeResponse();
+  await relay.handle(streamRequest(false), response, user);
+  assert.equal(response.headers['Content-Type'], 'application/json; charset=utf-8');
+  assert.match(response.text(), /^ +$/);
+  fake.state.upstream.write('{"choices":[{"message":{"content":"整段"}}]}');
+  fake.state.upstream.complete = true;
+  fake.state.upstream.end();
+  await wait(30);
+  assert.equal(JSON.parse(response.text()).choices[0].message.content, '整段');
+  assert.ok(response.text().trimEnd().endsWith('}'), 'no padding once the body started');
+});
+
+test('upstream error after an early 200 becomes an error event the page shows', async () => {
+  const { relay, finished, fake, user, register } = setup({ ...KEEPALIVE, delayMs: 40, status: 429, contentType: 'application/json' });
+  register();
+  const response = fakeResponse();
+  await relay.handle(streamRequest(), response, user);
+  fake.state.upstream.write('{"error":{"message":"rate limited"}}');
+  fake.state.upstream.complete = true;
+  fake.state.upstream.end();
+  await tick(); await tick(); await tick();
+  assert.equal(response.statusCode, 200, 'status was already sent');
+  assert.ok(response.text().endsWith('data: {"error":{"message":"rate limited"}}\n\n'));
+  assert.ok(!response.text().replace(/data: .*\n\n$/, '').includes('rate limited'), 'raw body not passed through');
+  assert.equal(finished.length, 0, 'the page saw the error; nothing to recover');
+});
+
+test('non-streaming upstream error after an early 200 is a JSON error body', async () => {
+  const { relay, fake, user, register } = setup({ ...KEEPALIVE, delayMs: 40, status: 502, contentType: 'text/html' });
+  register();
+  const response = fakeResponse();
+  await relay.handle(streamRequest(false), response, user);
+  fake.state.upstream.write('<html>bad gateway</html>');
+  fake.state.upstream.complete = true;
+  fake.state.upstream.end();
+  await tick(); await tick();
+  assert.deepEqual(JSON.parse(response.text()), { error: { message: 'Got response status 502' } });
+});
+
+test('relay failure after an early 200 still ends the response with an error', async () => {
+  const { relay, finished, user, register } = setup({ ...KEEPALIVE, delayMs: 40, fail: true });
+  register();
+  const response = fakeResponse();
+  await relay.handle(streamRequest(), response, user);
+  await tick(); await tick();
+  assert.ok(response.text().endsWith('data: {"error":{"message":"Background relay could not reach SillyTavern"}}\n\n'));
+  assert.equal(response.writableFinished, true);
+  assert.equal(finished.length, 0);
+});
+
+test('client that leaves during the keep-alive phase: job continues, padding stops', async () => {
+  const { relay, finished, fake, user, register } = setup({ ...KEEPALIVE, delayMs: 40 });
+  register();
+  const response = fakeResponse();
+  const handled = relay.handle(streamRequest(), response, user);
+  await wait(30);
+  response.disconnect();
+  const written = response.chunks.length;
+  await handled;
+  fake.send('离开后');
+  fake.finish();
+  await wait(40);
+  assert.equal(response.chunks.length, written, 'nothing written after the client left');
+  assert.deepEqual(finished[0].outcome, { ok: true, text: '离开后', reasoning: '' });
+});
+
+test('keep-alive is off for unregistered requests and when configured to 0', async () => {
+  for (const options of [{ ...KEEPALIVE, delayMs: 50, registered: false }, { keepAliveAfterMs: 0, keepAliveIntervalMs: 10, delayMs: 50, registered: true }]) {
+    const { registered, ...rest } = options;
+    const { relay, fake, user, register } = setup(rest);
+    if (registered) register();
+    const response = fakeResponse();
+    await relay.handle(streamRequest(), response, user);
+    assert.ok(!response.text().includes('keepalive'));
+    assert.equal(response.headers['Content-Type'], 'text/event-stream', 'headers came from the upstream');
+    fake.finish();
+    await tick();
+  }
+});
+
+test('committedErrorBody keeps SillyTavern error JSON and hides everything else', () => {
+  assert.deepEqual(committedErrorBody(400, '{"error":{"message":"bad key"}}'), { error: { message: 'bad key' } });
+  assert.deepEqual(committedErrorBody(500, '{"error":true}'), { error: true });
+  assert.deepEqual(committedErrorBody(500, '{"ok":true}'), { error: { message: 'Got response status 500' } });
+  assert.deepEqual(committedErrorBody(400, '{"message":"quota"}'), { error: { message: 'quota' } }, 'non-stream page path only reads data.error');
+  assert.deepEqual(committedErrorBody(422, '{"detail":[{"msg":"bad"}]}'), { error: { message: '[{"msg":"bad"}]' } });
+  assert.deepEqual(committedErrorBody(504, '<html>timeout</html>'), { error: { message: 'Got response status 504' } });
 });

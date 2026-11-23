@@ -4,7 +4,7 @@
 //  2. cancels the background job when the user presses Stop,
 //  3. offers replies that finished in the background, and inserts them after confirmation,
 //  4. manages the push-notification subscription of this device.
-import { planInsertion } from './insertion.js';
+import { canInsertAutomatically, planInsertion } from './insertion.js';
 import { createTranslator } from './i18n.js';
 import { buildReport, collectEnvironment, configureRedaction, createDiagnosticsLog, hostOf } from './diagnostics.js';
 
@@ -250,9 +250,14 @@ async function offerResult(id) {
     diag.record('results.fetch', { error });
     return;
   }
+  // A new generation started, or another chat was opened, while the result was loading:
+  // it is offered again when that generation ends or its chat is opened.
+  if (mainGenerationType || !isCurrentChat(result)) return;
   diag.record('results.offer', { detail: { status: result.status, code: result.code, type: result.type } });
   promptOpen = true;
   try {
+    if (result.status === 'done' && settings().autoInsert === true && await insertResult(result, { auto: true })) return;
+
     const content = document.createElement('div');
     content.className = 'bgml-recovery';
     content.append(Object.assign(document.createElement('h3'), { textContent: t('recoveryTitle') }));
@@ -343,24 +348,35 @@ function addSwipe(message, result, sendDate) {
   message.extra = { ...(message.extra || {}), bgml_job: result.id, reasoning: result.reasoning || '' };
 }
 
-async function insertResult(result) {
+function isCurrentChat(result) {
+  return context().getCurrentChatId() === result.chatId && currentCharacter()?.avatar === result.characterAvatar;
+}
+
+/**
+ * Puts a finished result into the current chat. With `auto`, returns false when the user should be
+ * asked instead (the plan would add a swipe, the text changed, or the chat moved on); otherwise true.
+ */
+async function insertResult(result, { auto = false } = {}) {
+  // Loaded before the checks, so nothing awaits between checking the chat and changing it.
+  const { getMessageTimeStamp } = await import('/scripts/RossAscends-mods.js');
   const ctx = context();
-  const character = currentCharacter();
-  if (ctx.getCurrentChatId() !== result.chatId || character?.avatar !== result.characterAvatar) {
+  if (auto && mainGenerationType) return true; // offered again when that generation ends
+  if (!isCurrentChat(result)) {
+    if (auto) return true; // offered again when its chat is opened
     toastr.warning(t('wrongChat'), t('toastTitle'));
     deferred.add(result.id);
-    return;
+    return true;
   }
   const plan = planInsertion(ctx.chat, result);
-  diag.record('results.insert', { detail: { plan: plan.kind } });
+  if (auto && !canInsertAutomatically(plan, ctx.chat, result)) return false;
+  diag.record('results.insert', { detail: { plan: plan.kind, auto } });
   if (plan.kind === 'mismatch') {
     const copied = await copyText(result.text);
     await ctx.callGenericPopup(t('mismatch', { copied: copied ? t('mismatchCopied') : '' }), ctx.POPUP_TYPE.TEXT, '', { okButton: t('buttonGotIt') });
     deferred.add(result.id);
-    return;
+    return true;
   }
 
-  const { getMessageTimeStamp } = await import('/scripts/RossAscends-mods.js');
   const sendDate = getMessageTimeStamp();
   const events = ctx.eventTypes;
 
@@ -395,7 +411,8 @@ async function insertResult(result) {
     await ctx.eventSource.emit(events.CHARACTER_MESSAGE_RENDERED, plan.index, plan.kind === 'continue' ? 'continue' : 'swipe');
   }
   await api('POST', `/jobs/results/${result.id}/dismiss`).catch(() => {});
-  toastr.success(plan.kind === 'addSwipe' ? t('insertedSwipe') : t('inserted'), t('toastTitle'));
+  toastr.success(auto ? t('insertedAuto') : plan.kind === 'addSwipe' ? t('insertedSwipe') : t('inserted'), t('toastTitle'));
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -648,6 +665,10 @@ function buildPanel() {
           <input type="checkbox" data-bgml-background>
           <span data-bgml-text="toggle"></span>
         </label>
+        <label class="checkbox_label bgml-toggle">
+          <input type="checkbox" data-bgml-auto>
+          <span data-bgml-text="toggleAuto"></span>
+        </label>
         <p class="bgml-intro" data-bgml-text="introBackground"></p>
         <p class="bgml-intro" data-bgml-text="introPush"></p>
         <p class="bgml-hint" data-bgml-text="hintIOS"></p>
@@ -670,6 +691,12 @@ function buildPanel() {
   toggle.checked = settings().backgroundEnabled !== false;
   toggle.addEventListener('change', () => {
     settings().backgroundEnabled = toggle.checked;
+    context().saveSettingsDebounced();
+  });
+  const autoToggle = root.querySelector('[data-bgml-auto]');
+  autoToggle.checked = settings().autoInsert === true;
+  autoToggle.addEventListener('change', () => {
+    settings().autoInsert = autoToggle.checked;
     context().saveSettingsDebounced();
   });
 
